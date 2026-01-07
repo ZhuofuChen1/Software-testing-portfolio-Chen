@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "ilp-maintenance": {
+      "command": "python",
+      "args": [
+        "C:\\Users\\32936\\Desktop\\ILP\\CW1\\mcp-server\\maintenance_mcp_server.py"
+      ],
+      "cwd": "C:\\Users\\32936\\Desktop\\ILP\\CW1"
+    }
+  }
+}
+
+
+
+

@@ -1,0 +1,70 @@
+========================================
+Cursor MCP 快速配置指南
+========================================
+
+方法 1: 手动编辑配置文件（推荐）
+
+1. 打开 Cursor 配置文件：
+   C:\Users\32936\AppData\Roaming\Cursor\User\settings.json
+
+2. 在文件中添加或合并以下配置：
+
+{
+  "mcpServers": {
+    "ilp-maintenance": {
+      "command": "python",
+      "args": [
+        "C:\\Users\\32936\\Desktop\\ILP\\CW1\\mcp-server\\maintenance_mcp_server.py"
+      ],
+      "cwd": "C:\\Users\\32936\\Desktop\\ILP\\CW1"
+    }
+  }
+}
+
+3. 保存文件
+
+4. 重启 Cursor
+
+========================================
+方法 2: 通过 Cursor 设置界面
+
+1. 按 Ctrl + , 打开设置
+2. 搜索 "MCP" 或 "mcpServers"
+3. 点击 "Edit in settings.json"
+4. 添加上述配置
+5. 保存并重启 Cursor
+
+========================================
+验证配置
+
+1. 确保 Spring Boot 服务正在运行
+   (在项目目录运行: .\mvnw.cmd spring-boot:run)
+
+2. 重启 Cursor
+
+3. 在 Cursor 的 AI 聊天中测试：
+   - "What's the maintenance status of the drone fleet?"
+   - "Show me all high-risk drones"
+   - "Get maintenance details for drone drn-101"
+
+========================================
+如果遇到问题
+
+1. 检查 Python 是否在 PATH 中：
+   python --version
+
+2. 检查 MCP 依赖是否安装：
+   cd mcp-server
+   pip install -r requirements.txt
+
+3. 测试 API 连接：
+   python mcp-server/test_mcp_server.py
+
+4. 查看 Cursor 输出面板：
+   View -> Output -> 选择 "MCP" 频道
+
+========================================
+
+
+
+
