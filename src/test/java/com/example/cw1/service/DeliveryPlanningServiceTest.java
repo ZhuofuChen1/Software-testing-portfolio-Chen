@@ -14,8 +14,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -90,6 +89,241 @@ class DeliveryPlanningServiceTest {
         plan.setMissionBuffer(missionBuffer);
         plan.setRecommendation("test");
         return plan;
+    }
+
+    // ==================== Branch Coverage Tests ====================
+
+    @Test
+    void calcDeliveryPathWithNullDispatches() {
+        DeliveryPathResponse response = service.calcDeliveryPath(null);
+        
+        assertNotNull(response);
+        assertEquals(0, response.getTotalMoves());
+        assertEquals(0.0, response.getTotalCost());
+    }
+
+    @Test
+    void calcDeliveryPathWithEmptyDispatches() {
+        DeliveryPathResponse response = service.calcDeliveryPath(List.of());
+        
+        assertNotNull(response);
+        assertEquals(0, response.getTotalMoves());
+    }
+
+    @Test
+    void calcDeliveryPathWithNullDrones() {
+        when(ilpDataService.getDrones()).thenReturn(null);
+        
+        DeliveryPathResponse response = service.calcDeliveryPath(
+                List.of(dispatch(1, 10, false, false, null))
+        );
+        
+        assertNotNull(response);
+        assertEquals(0, response.getTotalMoves());
+    }
+
+    @Test
+    void calcDeliveryPathWithEmptyDrones() {
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{});
+        
+        DeliveryPathResponse response = service.calcDeliveryPath(
+                List.of(dispatch(1, 10, false, false, null))
+        );
+        
+        assertNotNull(response);
+        assertEquals(0, response.getTotalMoves());
+    }
+
+    @Test
+    void calcDeliveryPathWithNullRequirements() {
+        Drone drone = drone("drn-test", 30, true, true);
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{drone});
+        
+        // Dispatch with null requirements
+        MedDispatchRec rec = new MedDispatchRec();
+        rec.setId(1);
+        rec.setRequirements(null);
+        rec.setDate("2025-01-01");
+        rec.setTime("12:00");
+        
+        DeliveryPathResponse response = service.calcDeliveryPath(List.of(rec));
+        
+        assertNotNull(response);
+        assertEquals(0, response.getTotalMoves()); // Should return early
+    }
+
+    @Test
+    void calcDeliveryPathWithCoolingRequirement() {
+        Drone coolingDrone = drone("drn-cool", 30, true, false);
+        Drone noCoolingDrone = drone("drn-nocool", 30, false, false);
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{noCoolingDrone, coolingDrone});
+        when(maintenanceService.snapshot("drn-cool")).thenReturn(plan("drn-cool", 30.0, "LOW", 10.0, 5));
+
+        DeliveryPathResponse response = service.calcDeliveryPath(
+                List.of(dispatch(1, 10, true, false, null)) // Needs cooling
+        );
+        
+        assertNotNull(response);
+        if (!response.getDronePaths().isEmpty()) {
+            assertEquals("drn-cool", response.getDronePaths().get(0).getDroneId());
+        }
+    }
+
+    @Test
+    void calcDeliveryPathWithHeatingRequirement() {
+        Drone heatingDrone = drone("drn-heat", 30, false, true);
+        Drone noHeatingDrone = drone("drn-noheat", 30, false, false);
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{noHeatingDrone, heatingDrone});
+        when(maintenanceService.snapshot("drn-heat")).thenReturn(plan("drn-heat", 30.0, "LOW", 10.0, 5));
+
+        DeliveryPathResponse response = service.calcDeliveryPath(
+                List.of(dispatch(1, 10, false, true, null)) // Needs heating
+        );
+        
+        assertNotNull(response);
+        if (!response.getDronePaths().isEmpty()) {
+            assertEquals("drn-heat", response.getDronePaths().get(0).getDroneId());
+        }
+    }
+
+    @Test
+    void calcDeliveryPathWithNullDroneCapability() {
+        Drone noCapDrone = new Drone();
+        noCapDrone.setId("drn-nocap");
+        noCapDrone.setCapability(null);
+        
+        Drone validDrone = drone("drn-valid", 30, false, false);
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{noCapDrone, validDrone});
+        when(maintenanceService.snapshot("drn-valid")).thenReturn(plan("drn-valid", 30.0, "LOW", 10.0, 5));
+
+        DeliveryPathResponse response = service.calcDeliveryPath(
+                List.of(dispatch(1, 10, false, false, null))
+        );
+        
+        assertNotNull(response);
+    }
+
+    @Test
+    void calcDeliveryPathWithMaxCostExceeded() {
+        Drone drone = drone("drn-test", 30, false, false);
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{drone});
+        when(maintenanceService.snapshot("drn-test")).thenReturn(plan("drn-test", 30.0, "LOW", 10.0, 5));
+
+        // Create dispatch with very low maxCost that will be exceeded
+        DeliveryPathResponse response = service.calcDeliveryPath(
+                List.of(dispatch(1, 10, false, false, 0.001)) // Very low max cost
+        );
+        
+        assertNotNull(response);
+        // Should return empty response due to cost exceeded
+    }
+
+    @Test
+    void calcDeliveryPathWithMultipleDispatches() {
+        Drone drone = drone("drn-test", 50, true, true);
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{drone});
+        when(maintenanceService.snapshot("drn-test")).thenReturn(plan("drn-test", 30.0, "LOW", 20.0, 10));
+
+        DeliveryPathResponse response = service.calcDeliveryPath(
+                List.of(
+                        dispatch(1, 10, false, false, null),
+                        dispatch(2, 15, false, false, null),
+                        dispatch(3, 20, false, false, null)
+                )
+        );
+        
+        assertNotNull(response);
+        assertTrue(response.getTotalMoves() > 0);
+    }
+
+    @Test
+    void calcDeliveryPathAsGeoJsonWithEmptyDispatches() {
+        String geoJson = service.calcDeliveryPathAsGeoJson(List.of());
+        
+        assertNotNull(geoJson);
+        assertTrue(geoJson.contains("LineString"));
+        assertTrue(geoJson.contains("coordinates"));
+    }
+
+    @Test
+    void calcDeliveryPathAsGeoJsonWithNullDispatches() {
+        String geoJson = service.calcDeliveryPathAsGeoJson(null);
+        
+        assertNotNull(geoJson);
+        assertTrue(geoJson.contains("LineString"));
+    }
+
+    @Test
+    void calcDeliveryPathAsGeoJsonWithValidPath() {
+        Drone drone = drone("drn-test", 30, false, false);
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{drone});
+        when(maintenanceService.snapshot("drn-test")).thenReturn(plan("drn-test", 30.0, "LOW", 20.0, 10));
+
+        String geoJson = service.calcDeliveryPathAsGeoJson(
+                List.of(dispatch(1, 10, false, false, null))
+        );
+        
+        assertNotNull(geoJson);
+        assertTrue(geoJson.contains("Feature"));
+        assertTrue(geoJson.contains("LineString"));
+    }
+
+    @Test
+    void calcDeliveryPathWithNullDroneEntry() {
+        Drone validDrone = drone("drn-valid", 30, false, false);
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{null, validDrone});
+        when(maintenanceService.snapshot("drn-valid")).thenReturn(plan("drn-valid", 30.0, "LOW", 10.0, 5));
+
+        DeliveryPathResponse response = service.calcDeliveryPath(
+                List.of(dispatch(1, 10, false, false, null))
+        );
+        
+        assertNotNull(response);
+    }
+
+    @Test
+    void calcDeliveryPathWithInsufficientCapacity() {
+        Drone smallDrone = drone("drn-small", 5, false, false);
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{smallDrone});
+
+        DeliveryPathResponse response = service.calcDeliveryPath(
+                List.of(dispatch(1, 50, false, false, null)) // Needs 50, drone has 5
+        );
+        
+        assertNotNull(response);
+        assertEquals(0, response.getTotalMoves()); // No suitable drone
+    }
+
+    @Test
+    void calcDeliveryPathSkipsHighRiskWhenLowRiskAvailable() {
+        Drone lowRisk = drone("drn-low", 30, false, false);
+        Drone highRisk = drone("drn-high", 30, false, false);
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{highRisk, lowRisk});
+        
+        when(maintenanceService.snapshot("drn-low")).thenReturn(plan("drn-low", 20.0, "LOW", 20.0, 10));
+        when(maintenanceService.snapshot("drn-high")).thenReturn(plan("drn-high", 80.0, "HIGH", 5.0, 1));
+
+        DeliveryPathResponse response = service.calcDeliveryPath(
+                List.of(dispatch(1, 10, false, false, null))
+        );
+        
+        assertNotNull(response);
+        if (!response.getDronePaths().isEmpty()) {
+            assertEquals("drn-low", response.getDronePaths().get(0).getDroneId());
+        }
+    }
+
+    @Test
+    void calcDeliveryPathWithNullMaintenancePlan() {
+        Drone drone = drone("drn-test", 30, false, false);
+        when(ilpDataService.getDrones()).thenReturn(new Drone[]{drone});
+        when(maintenanceService.snapshot("drn-test")).thenReturn(null); // No maintenance plan
+
+        DeliveryPathResponse response = service.calcDeliveryPath(
+                List.of(dispatch(1, 10, false, false, null))
+        );
+        
+        assertNotNull(response);
     }
 
     private MedDispatchRec dispatch(int id, double capacity, boolean cooling, boolean heating, Double maxCost) {

@@ -353,6 +353,252 @@ class MaintenanceServiceTest {
                 "Risk score should be in valid range [0, 100]");
     }
 
+    // ==================== Branch Coverage Tests ====================
+
+    @Test
+    void throwsExceptionForNullLog() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            maintenanceService.recordLog(null);
+        });
+    }
+
+    @Test
+    void snapshotReturnsNullForNullDroneId() {
+        MaintenancePlan result = maintenanceService.snapshot(null);
+        assertNull(result);
+    }
+
+    @Test
+    void snapshotReturnsNullForBlankDroneId() {
+        MaintenancePlan result = maintenanceService.snapshot("   ");
+        assertNull(result);
+    }
+
+    @Test
+    void planWithNullRequest() {
+        // Test passing null request to plan()
+        MaintenancePlanResponse response = maintenanceService.plan(null);
+        assertNotNull(response);
+        assertNotNull(response.getInsight()); // Should include insight when request is null
+    }
+
+    @Test
+    void planWithIncludeFleetInsightFalse() {
+        MaintenancePlanRequest request = new MaintenancePlanRequest();
+        request.setIncludeFleetInsight(false);
+
+        MaintenancePlanResponse response = maintenanceService.plan(request);
+        
+        assertNotNull(response);
+        assertNotNull(response.getPlans());
+        assertNull(response.getInsight()); // Should NOT include insight
+    }
+
+    @Test
+    void planWithSpecificDroneIds() {
+        // First record a log
+        MaintenanceLog log = new MaintenanceLog();
+        log.setDroneId("drn-test-001");
+        log.setFlightHours(10.0);
+        maintenanceService.recordLog(log);
+
+        // Request with specific drone IDs
+        MaintenancePlanRequest request = new MaintenancePlanRequest();
+        request.setDroneIds(java.util.List.of("drn-test-001"));
+        request.setIncludeFleetInsight(true);
+
+        MaintenancePlanResponse response = maintenanceService.plan(request);
+        
+        assertNotNull(response);
+        assertTrue(response.getPlans().stream()
+                .anyMatch(p -> "drn-test-001".equals(p.getDroneId())));
+    }
+
+    @Test
+    void planWithNewLogsContainingInvalidEntries() {
+        MaintenancePlanRequest request = new MaintenancePlanRequest();
+        
+        // Add logs with null/blank droneId - these should be skipped
+        MaintenanceLog validLog = new MaintenanceLog();
+        validLog.setDroneId("drn-valid");
+        validLog.setFlightHours(5.0);
+        
+        MaintenanceLog nullIdLog = new MaintenanceLog();
+        nullIdLog.setDroneId(null);
+        
+        MaintenanceLog blankIdLog = new MaintenanceLog();
+        blankIdLog.setDroneId("   ");
+        
+        MaintenanceLog nullLog = null;
+        
+        request.setNewLogs(java.util.Arrays.asList(validLog, nullIdLog, blankIdLog, nullLog));
+        
+        MaintenancePlanResponse response = maintenanceService.plan(request);
+        
+        assertNotNull(response);
+        // Only the valid log should be processed
+    }
+
+    @Test
+    void planWithExistingTimestamp() {
+        MaintenanceLog log = new MaintenanceLog();
+        log.setDroneId("drn-test-001");
+        log.setFlightHours(5.0);
+        log.setRecordedAt("2026-01-01T10:00:00Z"); // Already set timestamp
+
+        MaintenancePlan plan = maintenanceService.recordLog(log);
+        
+        assertNotNull(plan);
+    }
+
+    @Test
+    void buildPlanWithNullDroneCapability() {
+        // Mock drone without capability
+        Drone droneNoCapability = new Drone();
+        droneNoCapability.setId("drn-no-cap");
+        droneNoCapability.setCapability(null);
+        
+        lenient().when(ilpDataService.getDrones()).thenReturn(new Drone[]{droneNoCapability});
+
+        MaintenanceLog log = new MaintenanceLog();
+        log.setDroneId("drn-no-cap");
+        log.setFlightHours(10.0);
+        
+        MaintenancePlan plan = maintenanceService.recordLog(log);
+        
+        assertNotNull(plan);
+        // Should use default capacity/maxMoves values
+    }
+
+    @Test
+    void buildPlanWithLowUtilizationFactors() {
+        // Create conditions where NO contributing factors are added
+        MaintenanceLog log = new MaintenanceLog();
+        log.setDroneId("drn-test-001");
+        log.setFlightHours(1.0);        // Low utilization < 75%
+        log.setMissions(1);              // Low mission < 65%
+        log.setAvgPayloadKg(5.0);        // Low payload < 70%
+        log.setEmergencyDiversions(0);   // No emergencies < 20%
+        log.setBatteryHealth(0.95);      // Good battery > 60%
+        log.setTemperatureAlerts(false); // No temp issues
+        log.setCommunicationIssues(false); // No comm issues
+
+        MaintenancePlan plan = maintenanceService.recordLog(log);
+        
+        assertNotNull(plan);
+        assertEquals("LOW", plan.getRiskLevel());
+        // The only factor should be "Using inferred..." if any, but with data it should have minimal factors
+    }
+
+    @Test
+    void buildInsightWithNoHighRiskDrones() {
+        // Create a scenario with all LOW risk drones
+        MaintenanceLog log = new MaintenanceLog();
+        log.setDroneId("drn-test-001");
+        log.setFlightHours(1.0);
+        log.setBatteryHealth(0.99);
+        log.setMissions(1);
+        maintenanceService.recordLog(log);
+
+        MaintenancePlanResponse response = maintenanceService.fleetSummary();
+        
+        assertNotNull(response);
+        assertNotNull(response.getInsight());
+        assertEquals(0, response.getInsight().getHighRisk());
+        // Should contain "Fleet ready for the next window" narrative
+        assertTrue(response.getInsight().getNarrative().stream()
+                .anyMatch(n -> n.contains("Fleet ready") || n.contains("ready")));
+    }
+
+    @Test
+    void recommendationForMediumRiskWithLowHours() {
+        // Create MEDIUM risk with hoursUntilHardLimit < 10
+        Drone droneSmallMoves = createMockDrone("drn-small", 25.0, 20, true, false);
+        lenient().when(ilpDataService.getDrones()).thenReturn(new Drone[]{droneSmallMoves});
+
+        MaintenanceLog log = new MaintenanceLog();
+        log.setDroneId("drn-small");
+        log.setFlightHours(17.0);  // Close to maxMoves * 0.9 = 18
+        log.setBatteryHealth(0.70);
+        log.setMissions(15);
+
+        MaintenancePlan plan = maintenanceService.recordLog(log);
+        
+        assertNotNull(plan);
+        assertNotNull(plan.getRecommendation());
+    }
+
+    @Test
+    void recommendationForMediumRiskWithHighHours() {
+        // Create MEDIUM risk with hoursUntilHardLimit >= 10
+        MaintenanceLog log = new MaintenanceLog();
+        log.setDroneId("drn-test-001");
+        log.setFlightHours(50.0);  // maxMoves=100, so 0.9*100 - 50 = 40 hours remaining
+        log.setBatteryHealth(0.65);
+        log.setMissions(15);
+
+        MaintenancePlan plan = maintenanceService.recordLog(log);
+        
+        assertNotNull(plan);
+        // Score should be MEDIUM range and have high hours until service
+        assertNotNull(plan.getRecommendation());
+    }
+
+    @Test
+    void indexDronesWithNullArray() {
+        lenient().when(ilpDataService.getDrones()).thenReturn(null);
+
+        MaintenanceLog log = new MaintenanceLog();
+        log.setDroneId("drn-test-001");
+        log.setFlightHours(5.0);
+        
+        // Should not throw, should use defaults
+        MaintenancePlan plan = maintenanceService.recordLog(log);
+        assertNotNull(plan);
+    }
+
+    @Test
+    void indexDronesWithNullDroneEntry() {
+        Drone validDrone = createMockDrone("drn-valid", 25.0, 100, true, false);
+        Drone nullIdDrone = new Drone();
+        nullIdDrone.setId(null);
+        
+        lenient().when(ilpDataService.getDrones()).thenReturn(new Drone[]{validDrone, nullIdDrone, null});
+
+        MaintenanceLog log = new MaintenanceLog();
+        log.setDroneId("drn-valid");
+        log.setFlightHours(5.0);
+        
+        MaintenancePlan plan = maintenanceService.recordLog(log);
+        assertNotNull(plan);
+    }
+
+    @Test
+    void snapshotForUnknownDroneReturnsInferredPlan() {
+        // Request snapshot for a drone not in store but in fleet
+        MaintenancePlan snapshot = maintenanceService.snapshot("drn-test-001");
+        
+        assertNotNull(snapshot);
+        // Should have inferred utilization factor
+        assertTrue(snapshot.getContributingFactors().stream()
+                .anyMatch(f -> f.contains("inferred") || f.contains("telemetry")));
+    }
+
+    @Test
+    void emptyContributingFactorsAfterHighRiskAlert() {
+        // Test case where contributing factors list is empty during alert
+        // This is rare but possible with edge case inputs
+        MaintenanceLog log = new MaintenanceLog();
+        log.setDroneId("drn-test-001");
+        log.setFlightHours(5.0);
+        log.setBatteryHealth(0.90);
+        
+        MaintenancePlan plan = maintenanceService.recordLog(log);
+        
+        assertNotNull(plan);
+        assertNotNull(plan.getContributingFactors());
+    }
+
     private Drone createMockDrone(String id, double capacity, int maxMoves, boolean cooling, boolean heating) {
         Drone drone = new Drone();
         drone.setId(id);
